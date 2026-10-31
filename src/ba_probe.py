@@ -129,7 +129,7 @@ def slt_from_text(s):
 # --------------------------------------------------------------------------
 # Live (broadband-delivered) channels
 # --------------------------------------------------------------------------
-LIVE_LAG_S = 6.0   # stay this far behind "now" so segments exist on the server
+LIVE_LAG_S = 12.0  # stay this far behind "now" so segments exist on the server (6 s was too close for some origins)
 
 def live_channels_from_report(path):
     s = open(path, encoding="utf-8", errors="replace").read()
@@ -420,9 +420,83 @@ def latest_segment_url(chan, now):
 
 ORIGIN_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux aarch64) ATSC3 receiver (hdhr-render-pi ba_probe)"}
 
+class ServerClock:
+    """The time as the stream servers see it, from the Date header of their replies.
+    The live timeline (which segment is newest) is worked out from the clock, so a PC
+    whose clock is off asks for segments that don't exist yet, or any more. Using the
+    servers' time makes that independent of the PC's clock.
+
+    The streams come through CDNs, and a reply from a CDN's cache carries the Date of when
+    it was cached (tens of seconds old), plus usually an Age header saying how long ago that
+    was. So: Date + Age, and of the recent readings the latest one, since a cached reply can
+    only make the time look earlier, never later."""
+
+    def __init__(self):
+        self.samples = collections.deque(maxlen=40)
+        self.lock = threading.Lock()
+        self.told = None
+
+    def note(self, headers, t0, t1):
+        date = headers.get("Date") if headers else None
+        if not date:
+            return
+        try:
+            import email.utils
+            server = email.utils.parsedate_to_datetime(date).timestamp() + 0.5   # Date is whole seconds
+            age = headers.get("Age")
+            if age and age.strip().isdigit():
+                server += int(age.strip())                                    # time spent in a CDN cache
+        except (TypeError, ValueError):
+            return
+        off = server - (t0 + t1) / 2
+        if abs(off) > 86400 or t1 - t0 > 3:                                       # nonsense, or too slow to trust
+            return
+        with self.lock:
+            self.samples.append(off)
+        o = self.offset()
+        if abs(o) >= 2 and (self.told is None or abs(o - self.told) >= 3):
+            self.told = o
+            say(f"Clock: this computer is {abs(o):.0f} s {'slow' if o > 0 else 'fast'}; "
+                "live channels use the stream servers' time instead.")
+
+    def offset(self):
+        with self.lock:
+            return max(self.samples) if self.samples else 0.0
+
+    def now(self):
+        return time.time() + self.offset()
+
+    def ensure(self, chan):
+        """Get a reading before the first live playlist is made, from a file that is sure
+        to exist (the video's init segment), so the very first playlist is already right."""
+        if self.samples:
+            return
+        urls = [chan["base_url"]]
+        try:
+            urls.insert(0, latest_segment_url(chan, time.time())[0])
+        except Exception:
+            pass
+        for url in urls * 3:                     # a few readings: one may come from a CDN cache
+            try:
+                with fetch_origin(url, timeout=6) as r:
+                    r.read(1)
+            except Exception:
+                pass
+            if len(self.samples) >= 3:
+                return
+
+CLOCK = ServerClock()
+
 def fetch_origin(url, timeout=10):
     req = urllib.request.Request(url, headers=ORIGIN_HEADERS)
-    return urllib.request.urlopen(req, timeout=timeout)
+    t0 = time.time()
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:          # a 404 still carries the server's Date
+        CLOCK.note(e.headers, t0, time.time())
+        raise
+    CLOCK.note(r.headers, t0, time.time())
+    return r
 
 def channel_number(title):
     """'Service 5007: T2 (14.10) Internet Required' -> '14.10'"""
@@ -1420,6 +1494,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def handle(self):
+        """The player gives up on a request now and then (seeking, switching quality, closing
+        the tab); writing to it then fails. That's normal, so no traceback for it."""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         b = body.encode()
         self.send_response(code)
@@ -1465,8 +1547,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/log.json":
             with LOG_LOCK:
                 return self._send(200, json.dumps(LOG), "application/json")
-        if path == "/time":
-            return self._send(200, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z",
+        if path == "/time":                      # the player's clock: the stream servers' time when known
+            return self._send(200, datetime.datetime.fromtimestamp(CLOCK.now(), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z",
                               "text/plain")
         m = re.match(r"^/live/(\d+)/(manifest\.mpd|watch|seg/(.+))$", path)
         if m:
@@ -1581,7 +1663,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, "unknown live channel", "text/plain")
         if what == "manifest.mpd":
             host = self.headers.get("Host", f"localhost:{self.server.args.port}")
-            mpd = live_mpd(chan, time.time(), f"http://{host}/live/{sid}/seg/", f"http://{host}/time",
+            CLOCK.ensure(chan)
+            mpd = live_mpd(chan, CLOCK.now(), f"http://{host}/live/{sid}/seg/", f"http://{host}/time",
                            keep_ac4=self.server.args.keep_ac4, flac=self.server.ac4 is not None)
             return self._send(200, mpd, "application/dash+xml")
         if what == "watch":
@@ -1611,6 +1694,8 @@ class Handler(BaseHTTPRequestHandler):
             st["last_error"] = f"HTTP {e.code} for {seg}"
             log(chan["title"], "!!", f"origin HTTP {e.code}: {url}")
             self._send(e.code, f"origin returned {e.code}", "text/plain")
+        except (BrokenPipeError, ConnectionAbortedError):
+            raise                   # the player hung up while we answered: not an origin problem
         except Exception as e:  # network errors, timeouts
             st["fail"] += 1
             st["last_error"] = f"{type(e).__name__}: {e}"
@@ -1712,6 +1797,8 @@ class Handler(BaseHTTPRequestHandler):
             st["last_error"] = f"origin HTTP {e.code} for {name}"
             log(chan["title"], "!!", st["last_error"])
             return self._send(e.code, f"origin returned {e.code}", "text/plain")
+        except (BrokenPipeError, ConnectionAbortedError):
+            raise                   # the player hung up while we answered
         except Exception as e:
             st["fail"] += 1
             st["last_error"] = f"{type(e).__name__}: {e}"
@@ -2066,7 +2153,8 @@ def main():
     if args.check_live:
         ok_all = True
         for c in live:
-            init, seg = latest_segment_url(c, time.time())
+            CLOCK.ensure(c)
+            init, seg = latest_segment_url(c, CLOCK.now())
             for label, url in (("init", init), ("latest segment", seg)):
                 try:
                     with fetch_origin(url) as r:

@@ -18,7 +18,7 @@ import ba_probe
 import ba_player_cli as ba_probe_win
 
 APP = "BA Player"
-VERSION = "1.0"
+VERSION = "1.1"
 AUTHOR = "Brian Scott"
 ABOUT = (f"{APP} {VERSION}\n"
          "ATSC 3.0 (NextGen TV) broadcaster apps and internet channels on Windows,\n"
@@ -301,9 +301,9 @@ class Gui:
         elif abs(off) <= 3:
             msg, col = "Clock: OK", "#2e7d32"
         else:
-            msg = (f"Clock: {abs(off):.0f} s {'slow' if off > 0 else 'fast'} - internet channels won't play. "
-                   "Fix: Settings > Time > Sync now (or w32tm /resync)")
-            col = "#c62828"
+            msg = (f"Clock: {abs(off):.0f} s {'slow' if off > 0 else 'fast'}. Live channels correct for it, "
+                   "but it's worth fixing: Settings > Time > Sync now")
+            col = "#b26a00"
         self.root.after(0, lambda: (self.clock_text.set(msg), self.clock_label.configure(foreground=col)))
 
     # ---------------------------------------------------------------- run
