@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "BA Player app scaler",
+  "version": "1.4",
+  "description": "Fits ATSC 3.0 broadcaster apps opened from BA Player (TV pages laid out at 1920x1080) to the browser window, and adds volume/mute (Alt+M, Alt+Up/Down). Only acts on pages opened with ?wsURL= (an app launch).",
+  "author": "Brian Scott",
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_title": "BA Player app scaler",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ],
+      "js": [
+        "audio.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true,
+      "world": "MAIN"
+    }
+  ]
+}
