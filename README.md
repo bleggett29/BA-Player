@@ -60,8 +60,7 @@ settings (`ba_player.json`), logs and the `build` folder.
   line under it says whether that ffmpeg really has the decoder; it's checked whenever the
   path changes. Left empty, BA Player looks for `ffmpeg-ac4.exe` next to itself.
   **Get ffmpeg-ac4** shows where to get it and how to build it.
-- **Clock** shows whether the PC's clock is right. Internet channels need it within a few
-  seconds (see below).
+- **Clock** shows whether the PC's clock is right (see below).
 - **Start** runs BA Player and opens `http://localhost:8999/`; **Stop** stops it. The window
   shows every request the apps make. **Browse Extension** explains how to install the app
   scaler.
@@ -121,13 +120,14 @@ If the static build fails, drop the last three configure options, build again, a
 
 Without it, internet channels play video only.
 
-## The PC's clock must be right
+## The PC's clock
 
 Internet channels keep only about a minute of video on their servers, and BA Player works
-out the newest piece from the PC's clock. A clock that's off by more than a few seconds
-asks for pieces that don't exist (yet, or any more), and every request comes back
-"404 Not Found". The window's **Clock** line warns about this. Fix it with
-**Settings > Time & language > Date & time > Sync now**, or in an Administrator PowerShell:
+out the newest piece from the time. Since version 1.1 it takes that time from the stream
+servers themselves (the Date of their replies), so a PC clock that's off no longer stops
+the channels; the window prints how far off it is. The window's **Clock** line still warns,
+because a wrong clock upsets other things too. To fix it: **Settings > Time & language >
+Date & time > Sync now**, or in an Administrator PowerShell:
 
 ```
 sc.exe config w32time start= auto
